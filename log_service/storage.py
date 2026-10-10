@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from uuid import UUID
 
@@ -14,6 +15,7 @@ class StorageError(Exception):
 class ElasticsearchStorage:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None):
         self.index = settings.elasticsearch_index
+        self.max_bulk_bytes = settings.bulk_max_bytes
         self.client = client or httpx.AsyncClient(
             base_url=settings.elasticsearch_url,
             timeout=10,
@@ -68,6 +70,42 @@ class ElasticsearchStorage:
             return (await self.request("GET", "/")).is_success
         except StorageError:
             return False
+
+    async def write_batch(self, events: list[LogEvent]) -> None:
+        chunks = []
+        size = 0
+        for event in events:
+            action = json.dumps({"index": {"_id": str(event.id)}}, separators=(",", ":"))
+            entry = (action + "\n" + event.model_dump_json() + "\n").encode("utf-8")
+            if len(entry) > self.max_bulk_bytes:
+                raise StorageError("A log exceeds the bulk request size limit")
+            if chunks and size + len(entry) > self.max_bulk_bytes:
+                await self.send_bulk(b"".join(chunks), len(chunks))
+                chunks, size = [], 0
+            chunks.append(entry)
+            size += len(entry)
+        if chunks:
+            await self.send_bulk(b"".join(chunks), len(chunks))
+
+    async def send_bulk(self, content: bytes, expected_count: int) -> None:
+        response = await self.request(
+            "POST",
+            f"/{self.index}/_bulk",
+            content=content,
+            headers={"Content-Type": "application/x-ndjson"},
+        )
+        if not response.is_success:
+            raise StorageError(f"Bulk write failed: HTTP {response.status_code}")
+        data = self.read_json(response)
+        items = data.get("items", [])
+        if len(items) != expected_count:
+            raise StorageError("Incomplete bulk response")
+        for item in items:
+            result = item.get("index", {})
+            if result.get("status") not in (200, 201) or result.get("error"):
+                raise StorageError(f"A bulk item failed: status {result.get('status')}")
+        if data.get("errors"):
+            raise StorageError("Some logs were not indexed")
 
     async def search(
         self,

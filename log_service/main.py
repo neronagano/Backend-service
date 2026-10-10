@@ -7,24 +7,33 @@ from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime
 
 from log_service.config import Settings, get_settings
-from log_service.models import LogEvent, LogLevel, LogPage
+from log_service.kafka import KafkaLogPublisher, PublishingError
+from log_service.models import AcceptedLog, LogEvent, LogLevel, LogPage
 from log_service.storage import ElasticsearchStorage, StorageError
 
 
 def create_app(
-    settings: Settings | None = None, storage: ElasticsearchStorage | None = None
+    settings: Settings | None = None,
+    storage: ElasticsearchStorage | None = None,
+    publisher: KafkaLogPublisher | None = None,
 ) -> FastAPI:
     configuration = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         store = storage or ElasticsearchStorage(configuration)
+        sender = publisher or KafkaLogPublisher(configuration)
         try:
             await store.ensure_index()
+            await sender.start()
             application.state.storage = store
+            application.state.publisher = sender
             yield
         finally:
-            await store.close()
+            try:
+                await sender.stop()
+            finally:
+                await store.close()
 
     application = FastAPI(
         title="Log Service",
@@ -36,6 +45,15 @@ def create_app(
     @application.exception_handler(StorageError)
     async def storage_error_handler(request: Request, exc: StorageError):
         return JSONResponse(status_code=503, content={"detail": "Elasticsearch is unavailable"})
+
+    @application.exception_handler(PublishingError)
+    async def publishing_error_handler(request: Request, exc: PublishingError):
+        return JSONResponse(status_code=503, content={"detail": "Kafka is unavailable"})
+
+    @application.post("/logs", response_model=AcceptedLog, status_code=202, tags=["logs"])
+    async def publish_log(event: LogEvent, request: Request):
+        await request.app.state.publisher.send(event)
+        return AcceptedLog(id=event.id)
 
     @application.get("/health", tags=["health"])
     async def health(request: Request):

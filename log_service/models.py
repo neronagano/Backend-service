@@ -29,3 +29,13 @@ class LogPage(BaseModel):
     total: int
     offset: int
     limit: int
+
+
+class KafkaEvent(LogEvent):
+    id: UUID = Field(...)
+    timestamp: AwareDatetime = Field(...)
+
+
+class AcceptedLog(BaseModel):
+    id: UUID
+    status: str = "queued"

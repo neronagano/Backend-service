@@ -5,9 +5,21 @@ import pytest
 from fastapi.testclient import TestClient
 
 from log_service.config import Settings
+from log_service.kafka import PublishingError
 from log_service.main import create_app
 from log_service.models import LogEvent
 from log_service.storage import ElasticsearchStorage
+
+
+class FakePublisher:
+    async def start(self):
+        pass
+
+    async def stop(self):
+        pass
+
+    async def send(self, event):
+        pass
 
 
 @pytest.fixture
@@ -25,7 +37,7 @@ def client():
         Settings(_env_file=None),
         client=httpx.AsyncClient(base_url="http://elasticsearch", transport=httpx.MockTransport(handle)),
     )
-    with TestClient(create_app(storage=storage)) as test_client:
+    with TestClient(create_app(storage=storage, publisher=FakePublisher())) as test_client:
         yield test_client
 
 
@@ -65,7 +77,7 @@ def test_elasticsearch_failure_returns_503():
         Settings(_env_file=None),
         client=httpx.AsyncClient(base_url="http://elasticsearch", transport=httpx.MockTransport(handle)),
     )
-    with TestClient(create_app(storage=storage)) as test_client:
+    with TestClient(create_app(storage=storage, publisher=FakePublisher())) as test_client:
         assert test_client.get("/logs").status_code == 503
         assert test_client.get("/health").status_code == 503
 
@@ -74,3 +86,27 @@ def test_elasticsearch_failure_returns_503():
 def test_invalid_log_schema(changes):
     with pytest.raises(ValueError):
         LogEvent.model_validate({"service": "demo", "message": "Started", **changes})
+
+
+def test_publishing_and_validation(client):
+    event_id = str(uuid4())
+    response = client.post("/logs", json={"id": event_id, "service": "demo", "message": "Started"})
+    assert response.status_code == 202
+    assert response.json() == {"id": event_id, "status": "queued"}
+    assert client.post("/logs", json={"service": "demo", "message": " "}).status_code == 422
+
+
+def test_kafka_failure_returns_503():
+    class OfflinePublisher(FakePublisher):
+        async def send(self, event):
+            raise PublishingError("Offline")
+
+    storage = ElasticsearchStorage(
+        Settings(_env_file=None),
+        client=httpx.AsyncClient(
+            base_url="http://elasticsearch",
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+        ),
+    )
+    with TestClient(create_app(storage=storage, publisher=OfflinePublisher())) as test_client:
+        assert test_client.post("/logs", json={"service": "demo", "message": "Started"}).status_code == 503
