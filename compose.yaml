@@ -96,6 +96,14 @@ services:
       kafka:
         condition: service_healthy
 
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    image: log-service:test
+    command: ["pytest", "-q"]
+
 volumes:
   kafka-data:
   elasticsearch-data:

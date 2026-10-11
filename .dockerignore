@@ -5,5 +5,4 @@ __pycache__
 .pytest_cache
 .env
 *.egg-info
-tests
 scripts
