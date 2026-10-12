@@ -159,32 +159,38 @@ API проверяется через асинхронный HTTPX AsyncClient. 
 
 Для локального запуска тестов:
 
-Нужен Python 3.12 или новее.
+Нужен [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Версия Python 3.12 задана в `.python-version`. uv создаёт окружение `.venv`
+и устанавливает зависимости приложения и группу `dev` для тестов.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
-pytest -q
+uv sync --locked
+uv run --locked pytest -q
 ```
+
+Зависимости перечислены в `pyproject.toml`, версии всех пакетов зафиксированы
+в `uv.lock`. После изменения зависимостей lock-файл обновляется командой
+`uv lock` и сохраняется в Git вместе с `pyproject.toml`.
+Docker устанавливает зависимости через `uv sync --locked`; в основной образ
+попадают только зависимости приложения, в тестовый добавляется группа `dev`.
 
 Проверка работающего Compose через API:
 
 ```bash
-python scripts/smoke_test.py
+uv run --locked python scripts/smoke_test.py
 ```
 
 Скрипт отправляет события, проверяет запись, поиск, фильтры, пагинацию
 и повторную отправку с тем же ID.
 
 Для разработки можно запустить только инфраструктуру, затем API и обработчик
-в двух терминалах с активированным окружением:
+в двух терминалах через uv:
 
 ```bash
 docker compose up -d kafka elasticsearch
-uvicorn log_service.main:app --reload --port 8080
+uv run --locked uvicorn log_service.main:app --reload --port 8080
 ```
 
 ```bash
-python -m log_service.worker
+uv run --locked python -m log_service.worker
 ```
