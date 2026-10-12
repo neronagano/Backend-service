@@ -85,6 +85,19 @@ async def test_health(client):
     assert (await client.get("/health")).json() == {"status": "ok", "elasticsearch": True}
 
 
+async def test_liveness_does_not_depend_on_elasticsearch():
+    def handle(request):
+        if request.method == "PUT":
+            return httpx.Response(200, json={"acknowledged": True})
+        return httpx.Response(503, json={"error": "offline"})
+
+    async with open_client(make_storage(handle), FakePublisher()) as test_client:
+        assert (await test_client.get("/health")).status_code == 503
+        response = await test_client.get("/live")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+
 async def test_elasticsearch_failure_returns_503():
     def handle(request):
         if request.method == "PUT":

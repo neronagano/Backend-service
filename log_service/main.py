@@ -55,6 +55,10 @@ def create_app(
         await request.app.state.publisher.send(event)
         return AcceptedLog(id=event.id)
 
+    @application.get("/live", tags=["health"])
+    async def live():
+        return {"status": "ok"}
+
     @application.get("/health", tags=["health"])
     async def health(request: Request):
         healthy = await request.app.state.storage.is_healthy()
