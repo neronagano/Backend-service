@@ -1,14 +1,13 @@
-from contextlib import asynccontextmanager
-from typing import Annotated
-from uuid import UUID
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
-from pydantic import AwareDatetime
+from fastapi import FastAPI
 
+from log_service.api.errors import publishing_error_handler, storage_error_handler
+from log_service.api.health import router as health_router
+from log_service.api.logs import router as logs_router
 from log_service.config import Settings, get_settings
 from log_service.kafka import KafkaLogPublisher, PublishingError
-from log_service.models import AcceptedLog, LogEvent, LogLevel, LogPage
 from log_service.storage import ElasticsearchStorage, StorageError
 
 
@@ -17,23 +16,20 @@ def create_app(
     storage: ElasticsearchStorage | None = None,
     publisher: KafkaLogPublisher | None = None,
 ) -> FastAPI:
-    configuration = settings or get_settings()
+    configuration = settings if settings is not None else get_settings()
 
     @asynccontextmanager
-    async def lifespan(application: FastAPI):
-        store = storage or ElasticsearchStorage(configuration)
-        sender = publisher or KafkaLogPublisher(configuration)
-        try:
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        async with AsyncExitStack() as stack:
+            store = storage if storage is not None else ElasticsearchStorage(configuration)
+            stack.push_async_callback(store.close)
+            sender = publisher if publisher is not None else KafkaLogPublisher(configuration)
+            stack.push_async_callback(sender.stop)
             await store.ensure_index()
             await sender.start()
             application.state.storage = store
             application.state.publisher = sender
             yield
-        finally:
-            try:
-                await sender.stop()
-            finally:
-                await store.close()
 
     application = FastAPI(
         title="Log Service",
@@ -41,64 +37,11 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
-
-    @application.exception_handler(StorageError)
-    async def storage_error_handler(request: Request, exc: StorageError):
-        return JSONResponse(status_code=503, content={"detail": "Elasticsearch is unavailable"})
-
-    @application.exception_handler(PublishingError)
-    async def publishing_error_handler(request: Request, exc: PublishingError):
-        return JSONResponse(status_code=503, content={"detail": "Kafka is unavailable"})
-
-    @application.post("/logs", response_model=AcceptedLog, status_code=202, tags=["logs"])
-    async def publish_log(event: LogEvent, request: Request):
-        await request.app.state.publisher.send(event)
-        return AcceptedLog(id=event.id)
-
-    @application.get("/live", tags=["health"])
-    async def live():
-        return {"status": "ok"}
-
-    @application.get("/health", tags=["health"])
-    async def health(request: Request):
-        healthy = await request.app.state.storage.is_healthy()
-        return JSONResponse(
-            status_code=200 if healthy else 503,
-            content={"status": "ok" if healthy else "unavailable", "elasticsearch": healthy},
-        )
-
-    @application.get("/logs", response_model=LogPage, tags=["logs"])
-    async def search_logs(
-        request: Request,
-        service: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
-        level: LogLevel | None = None,
-        q: Annotated[str | None, Query(min_length=1, max_length=1000)] = None,
-        from_time: AwareDatetime | None = None,
-        to_time: AwareDatetime | None = None,
-        offset: Annotated[int, Query(ge=0)] = 0,
-        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
-    ):
-        if offset + limit > 10000:
-            raise HTTPException(422, "Pagination window must not exceed 10000 logs")
-        if from_time and to_time and from_time > to_time:
-            raise HTTPException(422, "from_time must not be later than to_time")
-        return await request.app.state.storage.search(
-            service=service,
-            level=level,
-            q=q,
-            from_time=from_time,
-            to_time=to_time,
-            offset=offset,
-            limit=limit,
-        )
-
-    @application.get("/logs/{log_id}", response_model=LogEvent, tags=["logs"])
-    async def get_log(log_id: UUID, request: Request):
-        event = await request.app.state.storage.get(log_id)
-        if event is None:
-            raise HTTPException(404, "Log not found")
-        return event
-
+    application.state.settings = configuration
+    application.add_exception_handler(StorageError, storage_error_handler)
+    application.add_exception_handler(PublishingError, publishing_error_handler)
+    application.include_router(logs_router)
+    application.include_router(health_router)
     return application
 
 
