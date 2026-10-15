@@ -6,7 +6,7 @@ import pytest
 from aiokafka import TopicPartition
 
 from log_service.models import LogEvent
-from log_service.storage import StorageError
+from log_service.storage import PermanentStorageError, StorageError
 from log_service.worker import process_records
 
 
@@ -50,6 +50,15 @@ async def test_invalid_kafka_message_is_not_acknowledged(value):
         await process_records(consumer, storage, {TopicPartition("app-logs", 0): [bad_message]})
     consumer.commit.assert_not_awaited()
     storage.write_batch.assert_not_awaited()
+
+
+async def test_permanent_storage_failure_does_not_retry_or_commit():
+    consumer = SimpleNamespace(commit=AsyncMock())
+    storage = SimpleNamespace(write_batch=AsyncMock(side_effect=PermanentStorageError("Access denied")))
+    with pytest.raises(PermanentStorageError):
+        await process_records(consumer, storage, {TopicPartition("app-logs", 0): [make_message(5)]})
+    storage.write_batch.assert_awaited_once()
+    consumer.commit.assert_not_awaited()
 
 
 async def test_interrupted_retry_does_not_commit(monkeypatch):

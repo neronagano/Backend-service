@@ -28,8 +28,8 @@ class FakePublisher:
 def handle_request(request):
     if request.method == "PUT":
         return httpx.Response(200, json={"acknowledged": True})
-    if request.url.path == "/":
-        return httpx.Response(200, json={"version": {"number": "8.19"}})
+    if request.url.path.startswith("/_cluster/health/"):
+        return httpx.Response(200, json={"status": "yellow", "timed_out": False})
     if request.url.path.endswith("/_search"):
         return httpx.Response(200, json={"hits": {"total": {"value": 0}, "hits": []}})
     return httpx.Response(404, json={"found": False})

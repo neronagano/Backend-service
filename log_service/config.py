@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     batch_size: int = Field(default=200, ge=1, le=1000)
     flush_interval: float = Field(default=1, gt=0, le=30)
     bulk_max_bytes: int = Field(default=2097152, ge=131072, le=8388608)
+    auto_migrate: bool = True
+    request_timeout: float = Field(default=10, gt=0, le=120)
 
 
 @lru_cache

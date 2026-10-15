@@ -10,7 +10,7 @@ from aiokafka import AIOKafkaConsumer
 
 from log_service.config import Settings, get_settings
 from log_service.models import KafkaEvent
-from log_service.storage import ElasticsearchStorage, StorageError
+from log_service.storage import DocumentRejected, ElasticsearchStorage, PermanentStorageError, StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,8 @@ async def process_records(consumer, storage: ElasticsearchStorage, records: dict
         try:
             await storage.write_batch(events)
             break
+        except (DocumentRejected, PermanentStorageError):
+            raise
         except StorageError as exc:
             wait = min(delay + random.random(), 10)
             logger.warning("Bulk write failed; retrying in %.1fs: %s", wait, exc)
