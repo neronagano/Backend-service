@@ -5,20 +5,25 @@ from unittest.mock import AsyncMock
 import pytest
 from aiokafka import TopicPartition
 
+from log_service import worker
+from log_service.config import Settings
 from log_service.kafka import PublishingError
 from log_service.models import LogEvent
 from log_service.storage import DocumentRejected, PermanentStorageError, StorageError
 from log_service.worker import process_records
-from log_service import worker
-from log_service.config import Settings
 
 PARTITION = TopicPartition("app-logs", 0)
 
 
 def make_message(offset, *, value=None):
     event = LogEvent(service="demo", message=f"Message {offset}")
-    return SimpleNamespace(offset=offset, value=value if value is not None else event.model_dump_json().encode(),
-                           key=b"demo", headers=[], timestamp=123456789)
+    return SimpleNamespace(
+        offset=offset,
+        value=value if value is not None else event.model_dump_json().encode(),
+        key=b"demo",
+        headers=[],
+        timestamp=123456789,
+    )
 
 
 def make_dlq():
@@ -39,13 +44,20 @@ async def test_retry_finishes_before_offsets_are_committed(monkeypatch):
 
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
     await process_records(
-        SimpleNamespace(commit=commit), SimpleNamespace(write_batch=write_batch),
-        {PARTITION: [make_message(1), make_message(2)], TopicPartition("app-logs", 1): [make_message(7)]}, make_dlq(),
+        SimpleNamespace(commit=commit),
+        SimpleNamespace(write_batch=write_batch),
+        {
+            PARTITION: [make_message(1), make_message(2)],
+            TopicPartition("app-logs", 1): [make_message(7)],
+        },
+        make_dlq(),
     )
     assert calls == ["write", "write", "commit"]
 
 
-@pytest.mark.parametrize("value", [b"not-json", b'{"service":"demo","message":"Missing id"}', b"null"])
+@pytest.mark.parametrize(
+    "value", [b"not-json", b'{"service":"demo","message":"Missing id"}', b"null"]
+)
 async def test_invalid_event_is_saved_to_dlq_before_commit(value):
     order = []
     message = make_message(5, value=value)
@@ -61,7 +73,12 @@ async def test_invalid_event_is_saved_to_dlq_before_commit(value):
         assert offsets == {PARTITION: 6}
         order.append("commit")
 
-    await process_records(SimpleNamespace(commit=commit), storage, {PARTITION: [message]}, SimpleNamespace(send_record=send))
+    await process_records(
+        SimpleNamespace(commit=commit),
+        storage,
+        {PARTITION: [message]},
+        SimpleNamespace(send_record=send),
+    )
     assert order == ["dlq", "commit"]
     storage.write_batch.assert_not_awaited()
 
@@ -72,14 +89,18 @@ async def test_dlq_failure_never_acknowledges_source():
     dead_letters = make_dlq()
     dead_letters.send_record.side_effect = PublishingError("Offline")
     with pytest.raises(PublishingError):
-        await process_records(consumer, storage, {PARTITION: [make_message(5, value=b"broken")]}, dead_letters)
+        await process_records(
+            consumer, storage, {PARTITION: [make_message(5, value=b"broken")]}, dead_letters
+        )
     consumer.commit.assert_not_awaited()
     storage.write_batch.assert_not_awaited()
 
 
 async def test_permanent_storage_failure_does_not_retry_or_commit():
     consumer = SimpleNamespace(commit=AsyncMock())
-    storage = SimpleNamespace(write_batch=AsyncMock(side_effect=PermanentStorageError("Access denied")))
+    storage = SimpleNamespace(
+        write_batch=AsyncMock(side_effect=PermanentStorageError("Access denied"))
+    )
     dead_letters = make_dlq()
     with pytest.raises(PermanentStorageError):
         await process_records(consumer, storage, {PARTITION: [make_message(5)]}, dead_letters)
@@ -108,7 +129,12 @@ async def test_rejected_document_does_not_discard_valid_documents():
 
     messages = [make_message(5), make_message(6), make_message(7)]
     dead_letters = SimpleNamespace(send_record=AsyncMock(side_effect=send))
-    await process_records(SimpleNamespace(commit=commit), SimpleNamespace(write_batch=write), {PARTITION: messages}, dead_letters)
+    await process_records(
+        SimpleNamespace(commit=commit),
+        SimpleNamespace(write_batch=write),
+        {PARTITION: messages},
+        dead_letters,
+    )
     assert [event.message for event in indexed] == ["Message 5", "Message 7"]
     dead_letters.send_record.assert_awaited_once_with(PARTITION, messages[1], "mapping_error")
     assert order == ["write", "dlq", "write", "commit"]
@@ -130,7 +156,13 @@ async def test_batch_timeout_leaves_offsets_uncommitted():
         await asyncio.Event().wait()
 
     with pytest.raises(TimeoutError):
-        await process_records(consumer, SimpleNamespace(write_batch=write), {PARTITION: [make_message(5)]}, make_dlq(), timeout=0.02)
+        await process_records(
+            consumer,
+            SimpleNamespace(write_batch=write),
+            {PARTITION: [make_message(5)]},
+            make_dlq(),
+            timeout=0.02,
+        )
     consumer.commit.assert_not_awaited()
 
 
@@ -145,8 +177,10 @@ async def test_empty_batch_does_not_commit():
 async def test_failed_worker_startup_closes_every_resource(monkeypatch):
     storage = SimpleNamespace(ensure_index=AsyncMock(), close=AsyncMock())
     publisher = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
-    consumer = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError("Consumer failed")),
-                               stop=AsyncMock(side_effect=RuntimeError("Stop failed")))
+    consumer = SimpleNamespace(
+        start=AsyncMock(side_effect=RuntimeError("Consumer failed")),
+        stop=AsyncMock(side_effect=RuntimeError("Stop failed")),
+    )
     monkeypatch.setattr(worker, "ElasticsearchStorage", lambda settings: storage)
     monkeypatch.setattr(worker, "DeadLetterPublisher", lambda settings: publisher)
     monkeypatch.setattr(worker, "AIOKafkaConsumer", lambda *args, **kwargs: consumer)

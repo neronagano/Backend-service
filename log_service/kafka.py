@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from aiokafka import AIOKafkaProducer
+from aiokafka import AIOKafkaProducer, TopicPartition
 from aiokafka.errors import KafkaError
 
 from log_service.config import Settings
@@ -48,13 +48,32 @@ class KafkaLogPublisher:
             value=event.model_dump_json().encode("utf-8"),
         )
 
-    async def send_raw(self, *, key: bytes, value: bytes | None, headers: list | None = None) -> None:
+    async def is_healthy(self) -> bool:
+        if self.producer is None:
+            return False
+        try:
+            metadata = await asyncio.wait_for(self.producer.client.fetch_all_metadata(), timeout=2)
+            partitions = metadata.partitions_for_topic(self.topic)
+            return bool(partitions) and all(
+                metadata.leader_for_partition(TopicPartition(self.topic, partition))
+                not in (None, -1)
+                for partition in partitions
+            )
+        except (KafkaError, TimeoutError):
+            return False
+
+    async def send_raw(
+        self, *, key: bytes, value: bytes | None, headers: list | None = None
+    ) -> None:
         if self.producer is None:
             raise PublishingError("Kafka producer is not running")
         try:
             await asyncio.wait_for(
                 self.producer.send_and_wait(
-                    self.topic, key=key, value=value, headers=headers,
+                    self.topic,
+                    key=key,
+                    value=value,
+                    headers=headers,
                 ),
                 timeout=self.settings.publish_timeout,
             )

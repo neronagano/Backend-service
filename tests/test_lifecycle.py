@@ -26,7 +26,9 @@ async def test_failed_startup_releases_resources(failed_step):
 
 async def test_storage_is_closed_even_if_publisher_shutdown_fails():
     storage = SimpleNamespace(ensure_index=AsyncMock(), close=AsyncMock())
-    publisher = SimpleNamespace(start=AsyncMock(), stop=AsyncMock(side_effect=RuntimeError("Stop failed")))
+    publisher = SimpleNamespace(
+        start=AsyncMock(), stop=AsyncMock(side_effect=RuntimeError("Stop failed"))
+    )
     app = create_app(Settings(_env_file=None), storage=storage, publisher=publisher)
 
     with pytest.raises(RuntimeError, match="Stop failed"):

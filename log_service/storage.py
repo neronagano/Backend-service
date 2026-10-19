@@ -57,7 +57,11 @@ class ElasticsearchStorage:
     def check_response(response: httpx.Response, operation: str) -> None:
         if response.is_success:
             return
-        error = StorageError if response.status_code in (408, 429) or response.status_code >= 500 else PermanentStorageError
+        error = (
+            StorageError
+            if response.status_code in (408, 429) or response.status_code >= 500
+            else PermanentStorageError
+        )
         raise error(f"{operation}: HTTP {response.status_code}")
 
     async def ensure_index(self) -> None:
@@ -76,6 +80,8 @@ class ElasticsearchStorage:
             },
         )
         if response.is_success:
+            if self.read_json(response).get("acknowledged") is not True:
+                raise StorageError("Log index creation was not acknowledged")
             return
         error = self.read_json(response).get("error", {})
         if response.status_code == 400 and isinstance(error, dict):
@@ -85,10 +91,16 @@ class ElasticsearchStorage:
                 if version == SCHEMA_VERSION:
                     return
                 response = await self.request(
-                    "PUT", f"/{self.index}/_mapping",
-                    json={**INDEX_MAPPING, "_meta": {**mapping.get("_meta", {}), **INDEX_MAPPING["_meta"]}},
+                    "PUT",
+                    f"/{self.index}/_mapping",
+                    json={
+                        **INDEX_MAPPING,
+                        "_meta": {**mapping.get("_meta", {}), **INDEX_MAPPING["_meta"]},
+                    },
                 )
                 self.check_response(response, "Cannot update log schema")
+                if self.read_json(response).get("acknowledged") is not True:
+                    raise StorageError("Log schema migration was not acknowledged")
                 return
         self.check_response(response, "Cannot create log index")
 
@@ -97,7 +109,9 @@ class ElasticsearchStorage:
         self.check_response(response, "Cannot read log schema")
         data = self.read_json(response)
         if set(data) != {self.index}:
-            raise PermanentStorageError("Expected a concrete log index; aliases require an explicit migration")
+            raise PermanentStorageError(
+                "Expected a concrete log index; aliases require an explicit migration"
+            )
         try:
             mapping = data[self.index]["mappings"]
             if not isinstance(mapping, dict):
@@ -114,29 +128,40 @@ class ElasticsearchStorage:
             raise PermanentStorageError("Invalid log index schema metadata")
         version = metadata.get("log_service_schema_version", 0)
         if type(version) is not int or not 0 <= version <= SCHEMA_VERSION:
-            raise PermanentStorageError("Log schema is newer than this application or has an invalid version")
+            raise PermanentStorageError(
+                "Log schema is newer than this application or has an invalid version"
+            )
         for name, expected in LOG_PROPERTIES.items():
             actual = properties.get(name)
             if actual is None and version == 0:
                 continue
             if not isinstance(actual, dict) or actual.get("type") != expected["type"]:
-                raise PermanentStorageError(f"Incompatible mapping for field {name}; reindex before upgrading")
+                raise PermanentStorageError(
+                    f"Incompatible mapping for field {name}; reindex before upgrading"
+                )
         if version and mapping.get("dynamic") != "strict":
             raise PermanentStorageError("The log index must use a strict mapping")
         return version
 
     async def check_schema(self) -> None:
         if self.validate_mapping(await self.read_mapping()) != SCHEMA_VERSION:
-            raise PermanentStorageError("Log schema needs migration: run python -m log_service.migrations")
+            raise PermanentStorageError(
+                "Log schema needs migration: run python -m log_service.migrations"
+            )
 
     async def is_healthy(self) -> bool:
         try:
             response = await self.request(
-                "GET", f"/_cluster/health/{self.index}",
+                "GET",
+                f"/_cluster/health/{self.index}",
                 params={"wait_for_status": "yellow", "timeout": "2s"},
             )
             data = self.read_json(response)
-            return response.is_success and not data.get("timed_out", False) and data.get("status") in ("green", "yellow")
+            return (
+                response.is_success
+                and not data.get("timed_out", False)
+                and data.get("status") in ("green", "yellow")
+            )
         except StorageError:
             return False
 
@@ -179,7 +204,9 @@ class ElasticsearchStorage:
             if status in (408, 429) or status >= 500:
                 raise StorageError(f"A bulk item failed: status {status}")
             if status in (401, 403, 404):
-                raise PermanentStorageError(f"Bulk index is unavailable or access is denied: status {status}")
+                raise PermanentStorageError(
+                    f"Bulk index is unavailable or access is denied: status {status}"
+                )
             if status not in (200, 201) or result.get("error"):
                 rejected.append((event, f"index_rejected_http_{status}"))
         if rejected:
@@ -237,7 +264,9 @@ class ElasticsearchStorage:
     async def get(self, log_id: UUID) -> LogEvent | None:
         response = await self.request("GET", f"/{self.index}/_doc/{log_id}")
         if response.status_code == 404:
-            return None
+            if self.read_json(response).get("found") is False:
+                return None
+            raise PermanentStorageError("The log index is missing")
         self.check_response(response, "Cannot read log")
         try:
             return LogEvent.model_validate(self.read_json(response)["_source"])

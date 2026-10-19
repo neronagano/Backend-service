@@ -15,6 +15,7 @@ async def migrate(check_only: bool = False) -> None:
             await storage.check_schema()
         else:
             await storage.migrate_index()
+            await storage.check_schema()
         print(f"Log index {storage.index}: schema version {SCHEMA_VERSION}")
     finally:
         await storage.close()

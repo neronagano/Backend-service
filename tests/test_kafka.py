@@ -15,8 +15,13 @@ from log_service.models import LogEvent
 async def test_dlq_preserves_original_bytes_and_source_coordinates():
     publisher = DeadLetterPublisher(Settings(_env_file=None))
     publisher.producer = SimpleNamespace(send_and_wait=AsyncMock())
-    record = SimpleNamespace(value=b"\xff invalid json", key=b"original", offset=42, timestamp=123,
-                             headers=[("trace", b"abc"), ("dlq.source_offset", b"spoof")])
+    record = SimpleNamespace(
+        value=b"\xff invalid json",
+        key=b"original",
+        offset=42,
+        timestamp=123,
+        headers=[("trace", b"abc"), ("dlq.source_offset", b"spoof")],
+    )
     await publisher.send_record(TopicPartition("app-logs", 2), record, "invalid_event")
     args, kwargs = publisher.producer.send_and_wait.call_args
     assert args == ("app-logs-dlq",)
@@ -58,10 +63,29 @@ async def test_stopped_publisher_rejects_new_messages():
         await publisher.send(LogEvent(service="demo", message="One"))
 
 
-@pytest.mark.parametrize("values", [
-    {"kafka_topic": "bad topic"}, {"kafka_dlq_topic": ".."}, {"kafka_dlq_topic": "app-logs"},
-    {"worker_batch_timeout": 0}, {"publish_timeout": -1},
-])
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"kafka_topic": "bad topic"},
+        {"kafka_dlq_topic": ".."},
+        {"kafka_dlq_topic": "app-logs"},
+        {"worker_batch_timeout": 0},
+        {"publish_timeout": -1},
+    ],
+)
 def test_invalid_kafka_configuration_is_rejected(values):
     with pytest.raises(ValueError):
         Settings(_env_file=None, **values)
+
+
+async def test_readiness_fetches_fresh_metadata_instead_of_using_cached_partitions():
+    metadata = SimpleNamespace(
+        partitions_for_topic=lambda topic: {0}, leader_for_partition=lambda partition: 1
+    )
+    client = SimpleNamespace(fetch_all_metadata=AsyncMock(return_value=metadata))
+    publisher = KafkaLogPublisher(Settings(_env_file=None))
+    publisher.producer = SimpleNamespace(client=client)
+    assert await publisher.is_healthy()
+    client.fetch_all_metadata.side_effect = KafkaError("Offline")
+    assert not await publisher.is_healthy()
+    assert client.fetch_all_metadata.await_count == 2

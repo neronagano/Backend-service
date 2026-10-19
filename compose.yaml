@@ -1,26 +1,55 @@
 name: log-service
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-app: &app
   build: .
   image: log-service:local
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=16777216,noexec,nosuid
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 256m
+  stop_grace_period: 30s
+  logging: *logging
   environment: &app-environment
     KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     KAFKA_TOPIC: ${KAFKA_TOPIC:-app-logs}
     KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-log-indexer}
+    KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-app-logs-dlq}
     ELASTICSEARCH_URL: http://elasticsearch:9200
     ELASTICSEARCH_INDEX: ${ELASTICSEARCH_INDEX:-app-logs}
     BATCH_SIZE: ${BATCH_SIZE:-200}
     FLUSH_INTERVAL: ${FLUSH_INTERVAL:-1}
     BULK_MAX_BYTES: ${BULK_MAX_BYTES:-2097152}
+    AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
+    API_KEY: ${API_KEY:-}
+    DOCS_ENABLED: ${DOCS_ENABLED:-true}
+    MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-131072}
+    BODY_READ_TIMEOUT: ${BODY_READ_TIMEOUT:-10}
+    REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-10}
+    STARTUP_TIMEOUT: ${STARTUP_TIMEOUT:-30}
+    PUBLISH_TIMEOUT: ${PUBLISH_TIMEOUT:-10}
+    SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10}
+    WORKER_BATCH_TIMEOUT: ${WORKER_BATCH_TIMEOUT:-120}
   depends_on:
     kafka:
       condition: service_healthy
+    kafka-init:
+      condition: service_completed_successfully
     elasticsearch:
       condition: service_healthy
 
 services:
   kafka:
     image: apache/kafka:4.1.2
+    logging: *logging
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_NODE_ID: 1
@@ -34,10 +63,12 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_NUM_PARTITIONS: 3
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      KAFKA_LOG_RETENTION_HOURS: ${KAFKA_RETENTION_HOURS:-168}
+      KAFKA_LOG_RETENTION_BYTES: ${KAFKA_RETENTION_BYTES:-1073741824}
     ports:
       - "127.0.0.1:9092:29092"
     volumes:
@@ -51,8 +82,29 @@ services:
       retries: 12
       start_period: 20s
 
+  kafka-init:
+    image: apache/kafka:4.1.2
+    logging: *logging
+    environment:
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-app-logs}
+      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-app-logs-dlq}
+      KAFKA_HEAP_OPTS: -Xms64m -Xmx128m
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        for topic in "$$KAFKA_TOPIC" "$$KAFKA_DLQ_TOPIC"; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+            --create --if-not-exists --topic "$$topic" \
+            --partitions 3 --replication-factor 1
+        done
+
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.19.23
+    logging: *logging
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"
@@ -77,7 +129,7 @@ services:
       - "127.0.0.1:${API_PORT:-8080}:8000"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=5)"]
       interval: 10s
       timeout: 6s
       retries: 6
@@ -85,6 +137,7 @@ services:
 
   worker:
     <<: *app
+    mem_limit: 512m
     command: ["python", "-m", "log_service.worker"]
     restart: unless-stopped
 
@@ -95,6 +148,17 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  migrate:
+    <<: *app
+    profiles: ["tools"]
+    command: ["python", "-m", "log_service.migrations"]
+    restart: "no"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
 
   tests:
     profiles: ["test"]
@@ -102,7 +166,7 @@ services:
       context: .
       target: test
     image: log-service:test
-    command: ["pytest", "-q"]
+    command: ["pytest", "-q", "-p", "no:cacheprovider"]
 
 volumes:
   kafka-data:

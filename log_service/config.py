@@ -1,12 +1,12 @@
-from functools import lru_cache
 import re
+from functools import lru_cache
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_index: str = Field(
@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     publish_timeout: float = Field(default=10, gt=0, le=60)
     shutdown_timeout: float = Field(default=10, gt=0, le=60)
     worker_batch_timeout: float = Field(default=120, gt=0, le=240)
+    api_key: SecretStr | None = Field(default=None, min_length=16)
+    docs_enabled: bool = True
+    max_request_bytes: int = Field(default=131072, ge=1024, le=1048576)
+    body_read_timeout: float = Field(default=10, gt=0, le=60)
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def empty_key_is_disabled(cls, value):
+        return None if value == "" else value
 
     @field_validator("kafka_topic", "kafka_dlq_topic")
     @classmethod

@@ -18,8 +18,7 @@ COPY log_service ./log_service
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable \
     && groupadd --gid 10001 app \
-    && useradd --uid 10001 --gid app --no-create-home app \
-    && chown -R app:app /app
+    && useradd --uid 10001 --gid app --no-create-home app
 
 FROM base AS test
 
@@ -35,4 +34,4 @@ FROM base AS runtime
 USER app
 
 EXPOSE 8000
-CMD ["uvicorn", "log_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "log_service.main:app", "--host", "0.0.0.0", "--port", "8000", "--limit-concurrency", "100", "--timeout-graceful-shutdown", "15"]

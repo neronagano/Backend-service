@@ -12,13 +12,24 @@ from aiokafka import AIOKafkaConsumer
 from log_service.config import Settings, get_settings
 from log_service.dlq import DeadLetterPublisher
 from log_service.models import KafkaEvent
-from log_service.storage import DocumentRejected, ElasticsearchStorage, PermanentStorageError, StorageError
+from log_service.storage import (
+    DocumentRejected,
+    ElasticsearchStorage,
+    PermanentStorageError,
+    StorageError,
+)
 
 logger = logging.getLogger(__name__)
 
 
-async def process_records(consumer, storage: ElasticsearchStorage, records: dict, dead_letters: DeadLetterPublisher,
-                          *, timeout: float = 120) -> None:
+async def process_records(
+    consumer,
+    storage: ElasticsearchStorage,
+    records: dict,
+    dead_letters: DeadLetterPublisher,
+    *,
+    timeout: float = 120,
+) -> None:
     async with asyncio.timeout(timeout):
         events = []
         sources = {}
@@ -31,8 +42,12 @@ async def process_records(consumer, storage: ElasticsearchStorage, records: dict
                 except (ValueError, TypeError):
                     await dead_letters.send_record(partition, message, "invalid_event")
                     rejected_count += 1
-                    logger.warning("Invalid event sent to DLQ: topic=%s partition=%d offset=%d",
-                                   partition.topic, partition.partition, message.offset)
+                    logger.warning(
+                        "Invalid event sent to DLQ: topic=%s partition=%d offset=%d",
+                        partition.topic,
+                        partition.partition,
+                        message.offset,
+                    )
                 else:
                     events.append(event)
                     sources[id(event)] = (partition, message)
@@ -53,8 +68,13 @@ async def process_records(consumer, storage: ElasticsearchStorage, records: dict
                     await dead_letters.send_record(partition, message, reason)
                     rejected_ids.add(id(event))
                     rejected_count += 1
-                    logger.warning("Rejected document sent to DLQ: topic=%s partition=%d offset=%d reason=%s",
-                                   partition.topic, partition.partition, message.offset, reason)
+                    logger.warning(
+                        "Rejected document sent to DLQ: topic=%s partition=%d offset=%d reason=%s",
+                        partition.topic,
+                        partition.partition,
+                        message.offset,
+                        reason,
+                    )
                 events = [event for event in events if id(event) not in rejected_ids]
             except PermanentStorageError:
                 raise
@@ -96,14 +116,19 @@ async def run_worker(settings: Settings | None = None) -> None:
             auto_offset_reset="earliest",
             max_poll_records=configuration.batch_size,
             max_poll_interval_ms=600000,
+            fetch_max_bytes=8388608,
         )
         stack.push_async_callback(stop_consumer, consumer, configuration.shutdown_timeout)
         async with asyncio.timeout(configuration.startup_timeout):
             await storage.ensure_index()
             await dead_letters.start()
             await consumer.start()
-        logger.info("Worker started: topic=%s dlq=%s batch_size=%d",
-                    configuration.kafka_topic, configuration.kafka_dlq_topic, configuration.batch_size)
+        logger.info(
+            "Worker started: topic=%s dlq=%s batch_size=%d",
+            configuration.kafka_topic,
+            configuration.kafka_dlq_topic,
+            configuration.batch_size,
+        )
         pending = defaultdict(list)
         count = 0
         first_message_at = None
@@ -121,15 +146,26 @@ async def run_worker(settings: Settings | None = None) -> None:
                         first_message_at = monotonic()
                     pending[partition].extend(messages)
                     count += len(messages)
-            due = first_message_at is not None and monotonic() - first_message_at >= configuration.flush_interval
+            due = (
+                first_message_at is not None
+                and monotonic() - first_message_at >= configuration.flush_interval
+            )
             if count and (count >= configuration.batch_size or due):
-                await process_records(consumer, storage, pending, dead_letters, timeout=configuration.worker_batch_timeout)
+                await process_records(
+                    consumer,
+                    storage,
+                    pending,
+                    dead_letters,
+                    timeout=configuration.worker_batch_timeout,
+                )
                 pending.clear()
                 count, first_message_at = 0, None
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     try:
         asyncio.run(run_worker())
     except (KeyboardInterrupt, asyncio.CancelledError):

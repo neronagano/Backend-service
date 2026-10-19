@@ -3,6 +3,11 @@
 __pycache__
 *.pyc
 .pytest_cache
+.ruff_cache
 .env
 *.egg-info
 scripts
+build
+dist
+*.log
+*.tmp

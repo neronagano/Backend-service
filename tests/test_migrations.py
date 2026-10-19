@@ -1,5 +1,5 @@
-from copy import deepcopy
 import json
+from copy import deepcopy
 
 import httpx
 import pytest
@@ -15,12 +15,16 @@ def make_storage(mapping, calls, *, auto_migrate=True):
         if request.method == "GET":
             return httpx.Response(200, json={"app-logs": {"mappings": mapping}})
         if request.url.path == "/app-logs":
-            return httpx.Response(400, json={"error": {"type": "resource_already_exists_exception"}})
+            return httpx.Response(
+                400, json={"error": {"type": "resource_already_exists_exception"}}
+            )
         return httpx.Response(200, json={"acknowledged": True})
 
     return ElasticsearchStorage(
         Settings(_env_file=None, auto_migrate=auto_migrate),
-        client=httpx.AsyncClient(base_url="http://elasticsearch", transport=httpx.MockTransport(handle)),
+        client=httpx.AsyncClient(
+            base_url="http://elasticsearch", transport=httpx.MockTransport(handle)
+        ),
     )
 
 
@@ -33,9 +37,14 @@ async def test_legacy_index_is_upgraded_without_deleting_documents():
     finally:
         await storage.close()
     assert [(r.method, r.url.path) for r in calls] == [
-        ("PUT", "/app-logs"), ("GET", "/app-logs/_mapping"), ("PUT", "/app-logs/_mapping"),
+        ("PUT", "/app-logs"),
+        ("GET", "/app-logs/_mapping"),
+        ("PUT", "/app-logs/_mapping"),
     ]
-    assert json.loads(calls[-1].content)["_meta"] == {"owner": "payments", "log_service_schema_version": 1}
+    assert json.loads(calls[-1].content)["_meta"] == {
+        "owner": "payments",
+        "log_service_schema_version": 1,
+    }
 
 
 async def test_current_schema_does_not_trigger_another_migration():

@@ -4,12 +4,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime
 
-from log_service.api.dependencies import get_publisher, get_storage
+from log_service.api.dependencies import get_publisher, get_storage, require_api_key
 from log_service.kafka import KafkaLogPublisher
 from log_service.models import AcceptedLog, LogEvent, LogLevel, LogPage
 from log_service.storage import ElasticsearchStorage
 
-router = APIRouter(prefix="/logs", tags=["logs"])
+router = APIRouter(prefix="/logs", tags=["logs"], dependencies=[Depends(require_api_key)])
 
 
 @router.post("", response_model=AcceptedLog, status_code=202)
