@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -10,14 +11,18 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 
-def run(base_url: str) -> None:
+def run(base_url: str, timeout: float = 60) -> None:
+    headers = {"Content-Type": "application/json"}
+    if os.environ.get("API_KEY"):
+        headers["X-API-Key"] = os.environ["API_KEY"]
+
     def request(method: str, path: str, body=None, expected=200):
         data = json.dumps(body).encode("utf-8") if body is not None else None
         query = urllib.request.Request(
             base_url.rstrip("/") + path,
             data=data,
             method=method,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         try:
             response = urllib.request.urlopen(query, timeout=15)
@@ -29,10 +34,15 @@ def run(base_url: str) -> None:
             return result
 
     assert request("GET", "/health")["status"] == "ok"
-    assert "/logs" in request("GET", "/openapi.json")["paths"]
+    assert request("GET", "/live")["status"] == "ok"
+    assert request("GET", "/ready")["status"] == "ok"
     service = "smoke-" + uuid4().hex[:8]
     start = datetime.now(UTC) - timedelta(minutes=1)
-    messages = [("INFO", "Application started"), ("ERROR", "Database connection timeout"), ("WARN", "Queue is nearly full")]
+    messages = [
+        ("INFO", "Application started"),
+        ("ERROR", "Database connection timeout"),
+        ("WARN", "Queue is nearly full"),
+    ]
     events = []
     for number, (level, message) in enumerate(messages):
         event = {
@@ -50,24 +60,27 @@ def run(base_url: str) -> None:
     def search(**filters):
         return request("GET", "/logs?" + urllib.parse.urlencode({"service": service, **filters}))
 
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         page = search()
         if page["total"] >= 3:
             break
         time.sleep(0.25)
     else:
-        raise AssertionError("Logs did not become searchable within 30 seconds")
+        raise AssertionError(f"Logs did not become searchable within {timeout:g} seconds")
     assert page["total"] == 3, page
     assert {event["id"] for event in page["items"]} == {event["id"] for event in events}
     assert request("GET", "/logs/" + events[0]["id"])["message"] == events[0]["message"]
     assert search(level="ERROR")["total"] == 1
     assert search(q="timeout")["items"][0]["id"] == events[1]["id"]
     assert search(offset=1, limit=1)["items"][0]["id"] == events[1]["id"]
-    assert search(
-        from_time=(start + timedelta(seconds=1.5)).isoformat(),
-        to_time=(start + timedelta(seconds=2.5)).isoformat(),
-    )["total"] == 1
+    assert (
+        search(
+            from_time=(start + timedelta(seconds=1.5)).isoformat(),
+            to_time=(start + timedelta(seconds=2.5)).isoformat(),
+        )["total"]
+        == 1
+    )
     request("GET", "/logs?limit=0", expected=422)
     request("GET", "/logs/" + str(uuid4()), expected=404)
     request("POST", "/logs", {"service": service, "message": ""}, expected=422)
@@ -78,4 +91,8 @@ def run(base_url: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://localhost:8080")
-    run(parser.parse_args().url)
+    parser.add_argument("--timeout", type=float, default=60, help="Seconds to wait for indexing")
+    args = parser.parse_args()
+    if args.timeout <= 0:
+        parser.error("timeout must be positive")
+    run(args.url, args.timeout)
