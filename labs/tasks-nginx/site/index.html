@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Список задач</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Список задач</h1>
+      <p>Задачи добавляются без перезагрузки страницы.</p>
+      <p id="health" class="secondary" role="status">Проверяется соединение с сервером</p>
+    </header>
+    <section aria-labelledby="add-heading">
+      <h2 id="add-heading">Новая задача</h2>
+      <form id="task-form">
+        <label for="title">Название</label>
+        <div class="input-row">
+          <input id="title" name="title" type="text" maxlength="200" required
+                 placeholder="Например, подготовить отчёт" autocomplete="off">
+          <button id="submit" type="submit">Добавить</button>
+        </div>
+      </form>
+      <p id="message" role="status" aria-live="polite"></p>
+    </section>
+    <section aria-labelledby="list-heading">
+      <div class="list-header">
+        <h2 id="list-heading">Добавленные задачи <span id="count">0</span></h2>
+        <button id="refresh" class="secondary-button" type="button">Обновить</button>
+      </div>
+      <p id="empty" class="secondary">Задач пока нет. Первая появится после добавления.</p>
+      <ol id="tasks"></ol>
+    </section>
+    <footer>Список хранится до перезапуска приложения.</footer>
+  </main>
+</body>
+</html>
